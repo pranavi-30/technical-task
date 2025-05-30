@@ -62,7 +62,7 @@ jobs:
     - name: Deploy to Minikube
       run: |
         # Apply Kubernetes manifests
-        kubectl apply -f k8s-deployment.yaml
+        kubectl apply -f k8s-deployment.yml
         
         # Wait for deployment to be ready
         kubectl rollout status deployment/fastapi-app --timeout=300s
