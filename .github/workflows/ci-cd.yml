@@ -62,7 +62,7 @@ jobs:
     - name: Deploy to Minikube
       run: |
         # Apply Kubernetes manifests
-        kubectl apply -f k8s-deployment.yaml
+        kubectl apply -f k8s-deployment.yml
         
         # Don't wait for rollout immediately, let's debug first
         echo "Waiting 30 seconds for pods to start..."
