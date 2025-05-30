@@ -41,14 +41,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Build Docker image
-      run: |
-        docker build -t fastapi-app:latest .
-        docker images
-    
     - name: Start Minikube
       uses: medyagh/setup-minikube@master
       with:
@@ -56,14 +48,19 @@ jobs:
         minikube-version: 1.31.2
         driver: docker
     
+    - name: Build and Load Docker image
+      run: |
+        # Use Minikube's Docker daemon directly
+        eval $(minikube docker-env)
+        
+        # Build the image directly in Minikube's Docker environment
+        docker build -t fastapi-app:latest .
+        
+        # Verify image is available
+        docker images | grep fastapi-app
+    
     - name: Deploy to Minikube
       run: |
-        # Load the Docker image into Minikube
-        minikube image load fastapi-app:latest
-        
-        # Verify image is loaded
-        minikube image ls | grep fastapi-app
-        
         # Apply Kubernetes manifests
         kubectl apply -f k8s-deployment.yaml
         
@@ -76,20 +73,19 @@ jobs:
     
     - name: Test deployment
       run: |
-        # Create a test service with NodePort for easier access
-        kubectl expose deployment fastapi-app --type=NodePort --port=8000 --name=test-service || true
+        # Wait for pods to be fully ready
+        kubectl wait --for=condition=ready pod -l app=fastapi-app --timeout=300s
         
-        # Get Minikube IP and NodePort
-        MINIKUBE_IP=$(minikube ip)
-        NODE_PORT=$(kubectl get svc test-service -o jsonpath='{.spec.ports[0].nodePort}')
+        # Option 1: Use port forwarding for testing
+        kubectl port-forward service/fastapi-service 8080:80 &
+        sleep 5
         
-        echo "Testing API at http://$MINIKUBE_IP:$NODE_PORT"
+        # Test with port forwarding
+        echo "Testing via port-forward..."
+        curl -f http://localhost:8080/ || exit 1
+        curl -f http://localhost:8080/health || exit 1
         
-        # Wait for service to be ready
-        sleep 10
+        # Kill port-forward
+        pkill -f "port-forward" || true
         
-        # Test the endpoints
-        curl -f http://$MINIKUBE_IP:$NODE_PORT/ || exit 1
-        curl -f http://$MINIKUBE_IP:$NODE_PORT/health || exit 1
-        
-        echo "API tests passed successfully!"
+        echo "Deployment tests completed!"

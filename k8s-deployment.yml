@@ -17,6 +17,7 @@ spec:
       containers:
       - name: fastapi-container
         image: fastapi-app:latest
+        imagePullPolicy: IfNotPresent  # Changed from Never to IfNotPresent
         ports:
         - containerPort: 8000
         resources:
@@ -51,3 +52,18 @@ spec:
       port: 80
       targetPort: 8000
   type: LoadBalancer
+---
+# Additional NodePort service for easier testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi-nodeport
+spec:
+  selector:
+    app: fastapi-app
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+      nodePort: 30001
+  type: NodePort
