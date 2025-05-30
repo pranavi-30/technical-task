@@ -5,7 +5,7 @@ metadata:
   labels:
     app: fastapi-app
 spec:
-  replicas: 3
+  replicas: 1  # Start with just 1 replica for easier debugging
   selector:
     matchLabels:
       app: fastapi-app
@@ -17,9 +17,12 @@ spec:
       containers:
       - name: fastapi-container
         image: fastapi-app:latest
-        imagePullPolicy: IfNotPresent  # Changed from Never to IfNotPresent
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
+        env:
+        - name: DEBUG
+          value: "true"
         resources:
           requests:
             cpu: "100m"
@@ -27,18 +30,26 @@ spec:
           limits:
             cpu: "250m"
             memory: "512Mi"
+        # Simplified probes for debugging
         livenessProbe:
           httpGet:
-            path: /health
+            path: /
             port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          initialDelaySeconds: 60  # Give more time to start
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /health
+            path: /
             port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 5
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        # Add command to debug startup issues
+        command: ["/bin/sh"]
+        args: ["-c", "echo 'Starting FastAPI app...' && uvicorn main:app --host 0.0.0.0 --port 8000"]
 ---
 apiVersion: v1
 kind: Service
@@ -51,9 +62,9 @@ spec:
     - protocol: TCP
       port: 80
       targetPort: 8000
-  type: LoadBalancer
+  type: ClusterIP  
 ---
-# Additional NodePort service for easier testing
+# Simple NodePort service for easy testing
 apiVersion: v1
 kind: Service
 metadata:

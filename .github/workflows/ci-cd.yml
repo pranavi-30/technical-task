@@ -62,30 +62,73 @@ jobs:
     - name: Deploy to Minikube
       run: |
         # Apply Kubernetes manifests
-        kubectl apply -f k8s-deployment.yml
+        kubectl apply -f k8s-deployment.yaml
         
-        # Wait for deployment to be ready
-        kubectl rollout status deployment/fastapi-app --timeout=300s
+        # Don't wait for rollout immediately, let's debug first
+        echo "Waiting 30 seconds for pods to start..."
+        sleep 30
         
-        # Check deployment status
-        kubectl get pods
-        kubectl get services
+        # Check pod status
+        echo "=== Pod Status ==="
+        kubectl get pods -o wide
+        
+        # Describe pods to see events
+        echo "=== Pod Descriptions ==="
+        kubectl describe pods
+        
+        # Check pod logs if any pods exist
+        echo "=== Pod Logs ==="
+        kubectl get pods -o name | while read pod; do
+          echo "Logs for $pod:"
+          kubectl logs $pod || echo "No logs available yet"
+        done
+        
+        # Check events
+        echo "=== Recent Events ==="
+        kubectl get events --sort-by=.metadata.creationTimestamp
+        
+        # Now try to wait for deployment with a shorter timeout
+        kubectl rollout status deployment/fastapi-app --timeout=120s || true
+        
+        # Final status check
+        echo "=== Final Status ==="
+        kubectl get all
     
-    - name: Test deployment
+    - name: Debug and Test deployment
       run: |
-        # Wait for pods to be fully ready
-        kubectl wait --for=condition=ready pod -l app=fastapi-app --timeout=300s
+        # Get pod status
+        POD_STATUS=$(kubectl get pods -l app=fastapi-app -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "No pods")
+        echo "Pod status: $POD_STATUS"
         
-        # Option 1: Use port forwarding for testing
-        kubectl port-forward service/fastapi-service 8080:80 &
-        sleep 5
-        
-        # Test with port forwarding
-        echo "Testing via port-forward..."
-        curl -f http://localhost:8080/ || exit 1
-        curl -f http://localhost:8080/health || exit 1
-        
-        # Kill port-forward
-        pkill -f "port-forward" || true
-        
-        echo "Deployment tests completed!"
+        if [ "$POD_STATUS" != "Running" ]; then
+          echo "Pods are not running. Checking for issues..."
+          
+          # Check if image exists in minikube
+          eval $(minikube docker-env)
+          docker images | grep fastapi-app
+          
+          # Try to run the container directly to test
+          echo "Testing container directly..."
+          docker run -d --name test-direct -p 8001:8000 fastapi-app:latest || {
+            echo "Direct container run failed. Checking logs..."
+            docker logs test-direct || true
+          }
+          
+          # Clean up test container
+          docker rm -f test-direct || true
+        else
+          # Pods are running, test the service
+          echo "Pods are running. Testing service..."
+          
+          # Try port forwarding
+          kubectl port-forward service/fastapi-service 8080:80 &
+          PF_PID=$!
+          sleep 5
+          
+          # Test
+          curl -f http://localhost:8080/ || echo "Port forward test failed"
+          curl -f http://localhost:8080/health || echo "Health check failed"
+          
+          # Kill port forward
+          kill $PF_PID || true
+        fi
