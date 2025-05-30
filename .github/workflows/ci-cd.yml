@@ -53,18 +53,19 @@ jobs:
     
     - name: Save Docker image
       run: |
-        docker save fastapi-app:latest > fastapi-app.tar
+        docker save fastapi-app:latest -o fastapi-app.tar
     
     - name: Upload Docker image as artifact
       uses: actions/upload-artifact@v3
       with:
         name: docker-image
         path: fastapi-app.tar
+        retention-days: 1
 
   deploy-test:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     
     steps:
     - uses: actions/checkout@v3
@@ -73,25 +74,48 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: docker-image
-    
-    - name: Load Docker image
-      run: |
-        docker load < fastapi-app.tar
+        path: ./
     
     - name: Start Minikube
       uses: medyagh/setup-minikube@master
+      with:
+        kubernetes-version: v1.28.3
+        minikube-version: 1.31.2
     
-    - name: Deploy to Minikube
+    - name: Load and Deploy to Minikube
       run: |
+        # Load Docker image into Minikube
         eval $(minikube docker-env)
-        docker load < fastapi-app.tar
+        docker load -i fastapi-app.tar
+        
+        # Apply Kubernetes manifests
         kubectl apply -f k8s-deployment.yaml
-        kubectl wait --for=condition=ready pod -l app=fastapi-app --timeout=300s
+        
+        # Wait for deployment to be ready
+        kubectl wait --for=condition=available --timeout=300s deployment/fastapi-app
+        
+        # Check deployment status
+        kubectl get pods
+        kubectl get services
     
     - name: Test deployment
       run: |
-        kubectl get pods
-        kubectl get services
-        # Get service URL and test endpoint
-        SERVICE_URL=$(minikube service fastapi-service --url)
-        curl -f $SERVICE_URL || exit 1
+        # Wait for service to be ready
+        sleep 10
+        
+        # Get service details
+        kubectl get svc fastapi-service
+        
+        # For LoadBalancer type in Minikube, we need to use tunnel or NodePort
+        # Let's create a temporary NodePort service for testing
+        kubectl expose deployment fastapi-app --type=NodePort --port=8000 --name=fastapi-test-service
+        
+        # Get the URL
+        export NODE_PORT=$(kubectl get services/fastapi-test-service -o go-template='{{(index .spec.ports 0).nodePort}}')
+        export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+        
+        echo "Testing API at http://$NODE_IP:$NODE_PORT"
+        
+        # Test the endpoints
+        curl -f http://$NODE_IP:$NODE_PORT/ || exit 1
+        curl -f http://$NODE_IP:$NODE_PORT/health || exit 1
