@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
@@ -31,68 +31,44 @@ jobs:
     - name: Lint with flake8
       run: |
         pip install flake8
-        # stop the build if there are Python syntax errors or undefined names
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  build:
+  build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
     
     - name: Build Docker image
       run: |
-        docker build -t fastapi-app:${{ github.sha }} .
-        docker tag fastapi-app:${{ github.sha }} fastapi-app:latest
-    
-    - name: Save Docker image
-      run: |
-        docker save fastapi-app:latest -o fastapi-app.tar
-    
-    - name: Upload Docker image as artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: docker-image
-        path: fastapi-app.tar
-        retention-days: 1
-
-  deploy-test:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Download Docker image
-      uses: actions/download-artifact@v3
-      with:
-        name: docker-image
-        path: ./
+        docker build -t fastapi-app:latest .
+        docker images
     
     - name: Start Minikube
       uses: medyagh/setup-minikube@master
       with:
         kubernetes-version: v1.28.3
         minikube-version: 1.31.2
+        driver: docker
     
-    - name: Load and Deploy to Minikube
+    - name: Deploy to Minikube
       run: |
-        # Load Docker image into Minikube
-        eval $(minikube docker-env)
-        docker load -i fastapi-app.tar
+        # Load the Docker image into Minikube
+        minikube image load fastapi-app:latest
+        
+        # Verify image is loaded
+        minikube image ls | grep fastapi-app
         
         # Apply Kubernetes manifests
         kubectl apply -f k8s-deployment.yaml
         
         # Wait for deployment to be ready
-        kubectl wait --for=condition=available --timeout=300s deployment/fastapi-app
+        kubectl rollout status deployment/fastapi-app --timeout=300s
         
         # Check deployment status
         kubectl get pods
@@ -100,22 +76,20 @@ jobs:
     
     - name: Test deployment
       run: |
+        # Create a test service with NodePort for easier access
+        kubectl expose deployment fastapi-app --type=NodePort --port=8000 --name=test-service || true
+        
+        # Get Minikube IP and NodePort
+        MINIKUBE_IP=$(minikube ip)
+        NODE_PORT=$(kubectl get svc test-service -o jsonpath='{.spec.ports[0].nodePort}')
+        
+        echo "Testing API at http://$MINIKUBE_IP:$NODE_PORT"
+        
         # Wait for service to be ready
         sleep 10
         
-        # Get service details
-        kubectl get svc fastapi-service
-        
-        # For LoadBalancer type in Minikube, we need to use tunnel or NodePort
-        # Let's create a temporary NodePort service for testing
-        kubectl expose deployment fastapi-app --type=NodePort --port=8000 --name=fastapi-test-service
-        
-        # Get the URL
-        export NODE_PORT=$(kubectl get services/fastapi-test-service -o go-template='{{(index .spec.ports 0).nodePort}}')
-        export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
-        
-        echo "Testing API at http://$NODE_IP:$NODE_PORT"
-        
         # Test the endpoints
-        curl -f http://$NODE_IP:$NODE_PORT/ || exit 1
-        curl -f http://$NODE_IP:$NODE_PORT/health || exit 1
+        curl -f http://$MINIKUBE_IP:$NODE_PORT/ || exit 1
+        curl -f http://$MINIKUBE_IP:$NODE_PORT/health || exit 1
+        
+        echo "API tests passed successfully!"
